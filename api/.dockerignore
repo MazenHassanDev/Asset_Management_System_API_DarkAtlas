@@ -1,0 +1,19 @@
+# Python / Django noise
+__pycache__/
+*.pyc
+.venv
+venv
+*.sqlite3
+.pytest_cache
+*.egg-info
+
+# VCS & secrets
+.git
+.env
+
+# Local docs / notes that shouldn't ship into the image
+docs/
+notes/
+
+# OS noise
+.DS_Store
