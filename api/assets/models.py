@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.contrib.postgres.fields import ArrayField
+from tenants.models import Organization
 
 # Create your models here.
 class Asset(models.Model):
@@ -23,6 +24,7 @@ class Asset(models.Model):
         MANUAL = 'manual', 'Manual'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(Organization, related_name='assets', on_delete=models.CASCADE, db_index=True)
     type = models.CharField(max_length=20, choices=AssetType.choices, db_index=True)
     value = models.CharField(max_length=500, db_index=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, db_index=True)
@@ -34,11 +36,12 @@ class Asset(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=['type', 'value'], name='unique_type_value')
+            # Dedup is per-tenant: the same (type, value) may exist in different orgs.
+            models.UniqueConstraint(fields=['organization', 'type', 'value'], name='unique_org_type_value')
         ]
 
         indexes = [
-            models.Index(fields=['type', 'status']),
+            models.Index(fields=['organization', 'type', 'status']),
         ]
 
     def __str__(self):
@@ -53,6 +56,7 @@ class Relationship(models.Model):
         DETECTED_ON = 'detected_on', 'Detected On'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(Organization, related_name='relationships', on_delete=models.CASCADE, db_index=True)
     from_asset = models.ForeignKey(Asset, related_name='relationships_from', on_delete=models.CASCADE)
     to_asset = models.ForeignKey(Asset, related_name='relationships_to', on_delete=models.CASCADE)
     relationship_type = models.CharField(max_length=20, choices=RelationshipType.choices)
