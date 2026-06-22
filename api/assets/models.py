@@ -36,7 +36,7 @@ class Asset(models.Model):
 
     class Meta:
         constraints = [
-            # Dedup is per-tenant: the same (type, value) may exist in different orgs.
+            # Dedup is per-tenant because the same (type, value) may exist in different orgs.
             models.UniqueConstraint(fields=['organization', 'type', 'value'], name='unique_org_type_value')
         ]
 

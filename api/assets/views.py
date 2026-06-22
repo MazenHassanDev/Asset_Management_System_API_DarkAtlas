@@ -2,18 +2,32 @@ from django.db import IntegrityError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.pagination import PageNumberPagination
-from drf_spectacular.utils import extend_schema, OpenApiResponse
+from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 
+from core.pagination import StandardPagination
 from tenants.permissions import HasOrganization
 from .models import Asset
 from .serializers import AssetSerializer
 # Create your views here.
 
+@extend_schema(
+    parameters=[
+        OpenApiParameter("type", OpenApiTypes.STR, description="Filter by asset type (domain, subdomain, ip_address, service, certificate, technology)."),
+        OpenApiParameter("status", OpenApiTypes.STR, description="Filter by status (active, stale, archived)."),
+        OpenApiParameter("tag", OpenApiTypes.STR, description="Return only assets carrying this tag."),
+        OpenApiParameter("value", OpenApiTypes.STR, description="Case-insensitive partial match on the asset value."),
+        OpenApiParameter("ordering", OpenApiTypes.STR, description="Sort field: one of last_seen, -last_seen, first_seen, -first_seen, value, -value (default -last_seen)."),
+        OpenApiParameter("page", OpenApiTypes.INT, description="1-based page number."),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Items per page (default 20, max 100)."),
+    ],
+    responses={200: AssetSerializer(many=True)},
+    description="List the caller's organization assets with filtering, ordering and pagination.",
+)
 @api_view(['GET'])
 @permission_classes([HasOrganization])
 def list_assets(request):
-    # Tenant scope: only ever this org's assets.
+    # Tenant scope (get this org's assets only)
     queryset = Asset.objects.filter(organization=request.organization)
 
     # Filter: type
@@ -44,9 +58,8 @@ def list_assets(request):
     else:
         queryset = queryset.order_by('-last_seen')
 
-    # Pagination
-    paginator = PageNumberPagination()
-    paginator.page_size = 20
+    # Pagination (default 20/page, client may override via ?page_size=, capped at max_page_size)
+    paginator = StandardPagination()
     asset_page = paginator.paginate_queryset(queryset, request)
     serializer = AssetSerializer(asset_page, many=True)
     return paginator.get_paginated_response(serializer.data)
@@ -76,11 +89,21 @@ def create_asset(request):
         )
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+@extend_schema(
+    request=AssetSerializer,
+    responses={
+        200: AssetSerializer,
+        204: OpenApiResponse(description="Deleted."),
+        404: OpenApiResponse(description="No such asset in your organization."),
+        409: OpenApiResponse(description="Update would collide with an existing asset (type/value)."),
+    },
+    description="Retrieve, replace (PUT), partially update (PATCH) or delete a single asset "
+                "owned by the caller's organization. Returns 404 if the asset belongs to another org.",
+)
 @api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
 @permission_classes([HasOrganization])
 def asset_detail(request, pk):
-    # Scoped lookup: an asset outside the caller's org is a 404, not a 403 —
-    # the caller can't even tell it exists.
+    # Look up is locked to org's scope: calling an asset outside the org will 404, not 403 for security purposes.
     try:
         asset = Asset.objects.get(pk=pk, organization=request.organization)
     except Asset.DoesNotExist:
