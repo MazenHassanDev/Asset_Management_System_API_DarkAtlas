@@ -18,8 +18,10 @@ The record's own `id` is not the primary key (we use UUIDs for primary key)
 — it's only a local label used to wire `parent`/`covers` relationships.
 """
 
+import uuid
+
 from django.db import IntegrityError, transaction
-from assets.models import Asset, Relationship
+from assets.models import Asset, Relationship, RejectedRecord
 
 VALID_TYPES = set(Asset.AssetType.values)
 VALID_STATUSES = set(Asset.Status.values)
@@ -111,29 +113,38 @@ def ingest(organization, records):
     """
     Import a list of raw asset records for one organization.
 
-    Bad rows are skipped (never failing the batch); each upsert runs in its own
-    savepoint so a DB error on one row can't roll back the good ones.
-    Relationship hints are wired in a second pass, once every asset exists.
+    Bad rows are quarantined into RejectedRecord (never failing the batch) and
+    grouped under one batch_id; each upsert runs in its own savepoint so a DB
+    error on one row can't roll back the good ones. Relationship hints are wired
+    in a second pass, once every asset exists.
     """
-    summary = {"created": 0, "updated": 0, "skipped": 0,
-               "relationships_created": 0, "errors": []}
+    batch_id = uuid.uuid4()  # groups every reject from this one import call
+    summary = {"batch_id": str(batch_id), "created": 0, "updated": 0,
+               "skipped": 0, "relationships_created": 0, "errors": []}
     ref_map = {}        # record id -> current Asset
     pending_hints = []  # (from_asset, target_ref_id, relationship_type)
+
+    def reject(index, record, reason):
+        # Quarantine a bad row: keep it for the Reject model and note it in the summary.
+        RejectedRecord.objects.create(
+            organization=organization, batch_id=batch_id,
+            index=index, record=record, reason=reason,
+        )
+        summary["errors"].append({"index": index, "reason": reason, "record": record})
+        summary["skipped"] += 1
 
     # Stage 1 — validate + upsert assets.
     for index, record in enumerate(records):
         cleaned, error = _validate(record)
         if error:
-            summary["errors"].append({"index": index, "reason": error})
-            summary["skipped"] += 1
+            reject(index, record, error)
             continue
 
         try:
             with transaction.atomic():
                 asset, created = _upsert(organization, cleaned)
         except IntegrityError:
-            summary["errors"].append({"index": index, "reason": "database conflict"})
-            summary["skipped"] += 1
+            reject(index, record, "database conflict")
             continue
 
         summary["created" if created else "updated"] += 1

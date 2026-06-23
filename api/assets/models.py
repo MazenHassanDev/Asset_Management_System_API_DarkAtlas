@@ -69,3 +69,20 @@ class Relationship(models.Model):
  
     def __str__(self):
         return f"{self.from_asset} - {self.relationship_type} - {self.to_asset}"
+
+
+class RejectedRecord(models.Model):
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(Organization, related_name='rejected_records', on_delete=models.CASCADE, db_index=True)
+    batch_id = models.UUIDField(db_index=True)
+    index = models.IntegerField()  # position of the row in the submitted payload
+    record = models.JSONField()    # the raw bad row, stored as-is (may not be a dict)
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['index']
+
+    def __str__(self):
+        return f"rejected[{self.index}]: {self.reason}"
