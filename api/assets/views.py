@@ -2,14 +2,17 @@ from django.db import IntegrityError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import NotFound
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
+from core.exceptions import Conflict
 from core.pagination import StandardPagination
 from tenants.permissions import HasOrganization
 from .models import Asset
 from .serializers import AssetSerializer
-# Create your views here.
+
+DUPLICATE_MESSAGE = "An asset with this type and value already exists for your organization."
 
 @extend_schema(
     parameters=[
@@ -77,17 +80,15 @@ def list_assets(request):
 @permission_classes([HasOrganization])
 def create_asset(request):
     serializer = AssetSerializer(data=request.data)
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    serializer.is_valid(raise_exception=True)
     try:
         # Org comes from the API key, never from the request body.
         serializer.save(organization=request.organization)
     except IntegrityError:
-        return Response(
-            {'message': 'An asset with this type and value already exists for your organization.'},
-            status=status.HTTP_409_CONFLICT,
-        )
+        raise Conflict(DUPLICATE_MESSAGE)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
 
 @extend_schema(
     request=AssetSerializer,
@@ -107,7 +108,7 @@ def asset_detail(request, pk):
     try:
         asset = Asset.objects.get(pk=pk, organization=request.organization)
     except Asset.DoesNotExist:
-        return Response({'message': 'Asset not found.'}, status=status.HTTP_404_NOT_FOUND)
+        raise NotFound("Asset not found.")
 
     if request.method == 'GET':
         serializer = AssetSerializer(asset)
@@ -116,15 +117,11 @@ def asset_detail(request, pk):
     if request.method in ['PUT', 'PATCH']:
         partial = request.method == 'PATCH'
         serializer = AssetSerializer(asset, data=request.data, partial=partial)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.is_valid(raise_exception=True)
         try:
             serializer.save()
         except IntegrityError:
-            return Response(
-                {'message': 'An asset with this type and value already exists for your organization.'},
-                status=status.HTTP_409_CONFLICT,
-            )
+            raise Conflict(DUPLICATE_MESSAGE)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     if request.method == 'DELETE':
