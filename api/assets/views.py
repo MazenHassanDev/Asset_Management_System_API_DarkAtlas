@@ -2,16 +2,24 @@ from django.db import IntegrityError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
 from core.exceptions import Conflict
 from core.pagination import StandardPagination
 from tenants.permissions import HasOrganization
-from .models import Asset
-from .serializers import AssetSerializer
+from .models import Asset, RejectedRecord
+from .serializers import AssetSerializer, RejectedRecordSerializer
+from .services.ingest import ingest
 
+# -------------------------------------------------
+#                ASSET API VIEWS
+# -------------------------------------------------
+
+
+# List assets with filtering, ordering and pagination.
+# -------------------------------------------------
 DUPLICATE_MESSAGE = "An asset with this type and value already exists for your organization."
 
 @extend_schema(
@@ -67,6 +75,29 @@ def list_assets(request):
     serializer = AssetSerializer(asset_page, many=True)
     return paginator.get_paginated_response(serializer.data)
 
+
+# Import a batch of asset records. Each record is validated and either created or merged with an existing asset.
+# -------------------------------------------------
+@extend_schema(
+    request=AssetSerializer(many=True),
+    responses={200: OpenApiResponse(description="Ingest summary"),
+                400: OpenApiResponse(description="Validation error"),
+    },
+    description="Ingest a batch of asset records. Each record is validated and either created or merged with an existing asset. Returns a summary of the operation.",
+)
+@api_view(['POST'])
+@permission_classes([HasOrganization])
+def import_assets(request):
+    records = request.data
+    if not isinstance(records, list):
+        raise ValidationError("Request body must be a JSON array of asset records.")
+    
+    summary = ingest(request.organization, records)
+    return Response(summary, status=status.HTTP_200_OK)
+
+
+# Create a new single asset for the caller's organization. Returns 409 if an asset with the same type/value already exists.
+# -------------------------------------------------
 @extend_schema(
         request=AssetSerializer,
         responses={
@@ -88,8 +119,8 @@ def create_asset(request):
         raise Conflict(DUPLICATE_MESSAGE)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-
-
+# Retrieve, replace (PUT), partially update (PATCH) or delete a single asset owned by the caller's organization.
+# -------------------------------------------------
 @extend_schema(
     request=AssetSerializer,
     responses={
@@ -127,3 +158,39 @@ def asset_detail(request, pk):
     if request.method == 'DELETE':
         asset.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# List the rejected (quarantined) rows from a single import batch, scoped to the caller's organization.
+# -------------------------------------------------
+@extend_schema(
+    parameters=[
+        OpenApiParameter("batch_id", OpenApiTypes.UUID, location=OpenApiParameter.PATH,
+                         description="The import batch to inspect."),
+        OpenApiParameter("page", OpenApiTypes.INT, description="1-based page number."),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Items per page (default 20, max 100)."),
+    ],
+    responses={
+        200: RejectedRecordSerializer(many=True),
+        404: OpenApiResponse(description="No such import batch for this organization."),
+    },
+    description="List the rejected (quarantined) rows from a single import batch, scoped to the caller's organization.",
+)
+@api_view(['GET'])
+@permission_classes([HasOrganization])
+def list_rejects(request, batch_id):
+    # Tenant guard: filtering on org first means a foreign batch_id simply yields nothing.
+    queryset = RejectedRecord.objects.filter(
+        organization=request.organization, batch_id=batch_id
+    )
+    if not queryset.exists():
+        raise NotFound("Import batch not found.")
+
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(queryset, request)
+    serializer = RejectedRecordSerializer(page, many=True)
+    return paginator.get_paginated_response(serializer.data)
+
+
+# -------------------------------------------------
+#                RELATIONSHIPS API VIEWS
+# -------------------------------------------------

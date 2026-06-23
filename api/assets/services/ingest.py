@@ -120,7 +120,9 @@ def ingest(organization, records):
     """
     batch_id = uuid.uuid4()  # groups every reject from this one import call
     summary = {"batch_id": str(batch_id), "created": 0, "updated": 0,
-               "skipped": 0, "relationships_created": 0, "errors": []}
+               "skipped": 0, "relationships_created": 0,
+               "errors": [],     # rejected rows (also persisted to RejectedRecord)
+               "warnings": []}   # non-fatal issues, e.g. unresolved relationship hints
     ref_map = {}        # record id -> current Asset
     pending_hints = []  # (from_asset, target_ref_id, relationship_type)
 
@@ -158,8 +160,8 @@ def ingest(organization, records):
     for from_asset, target_ref, rel_type in pending_hints:
         to_asset = ref_map.get(target_ref)
         if to_asset is None:
-            summary["errors"].append(
-                {"index": None, "reason": f"relationship target {target_ref!r} not found in batch"}
+            summary["warnings"].append(
+                {"reason": f"{from_asset.value}: relationship target {target_ref!r} not found in batch"}
             )
             continue
         _, created = Relationship.objects.get_or_create(
