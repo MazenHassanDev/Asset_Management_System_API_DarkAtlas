@@ -26,3 +26,6 @@ class RelationshipSerializer(serializers.ModelSerializer):
             'relationship_type', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
+        # Drop the auto UniqueTogetherValidator so a duplicate falls through to the DB
+        # constraint -> IntegrityError -> Conflict (409), consistent with create_asset.
+        validators = []

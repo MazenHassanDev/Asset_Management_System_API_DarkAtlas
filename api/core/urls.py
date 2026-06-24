@@ -20,6 +20,7 @@ from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from core.views import health_check
+from assets.views import relationships, delete_relationship
 
 
 urlpatterns = [
@@ -32,6 +33,8 @@ urlpatterns = [
 
     # App URLs
     path('api/assets/', include('assets.urls')),
+    path('api/relationships/', relationships, name='relationships'),
+    path('api/relationships/<uuid:pk>/', delete_relationship, name='delete_relationship'),
 
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

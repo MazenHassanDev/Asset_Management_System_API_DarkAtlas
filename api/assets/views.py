@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import IntegrityError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -9,8 +11,8 @@ from drf_spectacular.types import OpenApiTypes
 from core.exceptions import Conflict
 from core.pagination import StandardPagination
 from tenants.permissions import HasOrganization
-from .models import Asset, RejectedRecord
-from .serializers import AssetSerializer, RejectedRecordSerializer
+from .models import Asset, RejectedRecord, Relationship
+from .serializers import AssetSerializer, RejectedRecordSerializer, RelationshipSerializer
 from .services.ingest import ingest
 
 # -------------------------------------------------
@@ -194,3 +196,129 @@ def list_rejects(request, batch_id):
 # -------------------------------------------------
 #                RELATIONSHIPS API VIEWS
 # -------------------------------------------------
+
+# GET lists relationships (optionally filtered by from_asset/to_asset, paginated);
+# POST creates a relationship between two assets owned by the caller's organization.
+# -------------------------------------------------
+@extend_schema(
+    methods=['POST'],
+    request=RelationshipSerializer,
+    responses={
+        201: RelationshipSerializer,
+        400: OpenApiResponse(description="Validation error, or a referenced asset does not exist in your organization."),
+        409: OpenApiResponse(description="A relationship with this from_asset, to_asset and type already exists."),
+    },
+    description="Create a relationship between two assets owned by the caller's organization. "
+                "Both assets must belong to the caller's org; cross-tenant links are rejected.",
+)
+@extend_schema(
+    methods=['GET'],
+    parameters=[
+        OpenApiParameter("from_asset", OpenApiTypes.UUID, description="Filter by source asset id."),
+        OpenApiParameter("to_asset", OpenApiTypes.UUID, description="Filter by target asset id."),
+        OpenApiParameter("page", OpenApiTypes.INT, description="1-based page number."),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Items per page (default 20, max 100)."),
+    ],
+    responses={200: RelationshipSerializer(many=True)},
+    description="List the caller's organization relationships, optionally filtered by from_asset / to_asset.",
+)
+@api_view(['GET', 'POST'])
+@permission_classes([HasOrganization])
+def relationships(request):
+    if request.method == 'POST':
+        relationship = RelationshipSerializer(data=request.data)
+        relationship.is_valid(raise_exception=True)
+
+        org_id = request.organization.id
+        data = relationship.validated_data
+        if data['from_asset'].organization_id != org_id or data['to_asset'].organization_id != org_id:
+            raise ValidationError("Asset does not exist.")
+
+        try:
+            relationship.save(organization=request.organization)
+        except IntegrityError:
+            raise Conflict("A relationship with this from_asset, to_asset and type already exists for your organization.")
+        return Response(relationship.data, status=status.HTTP_201_CREATED)
+
+    # GET — list with optional filtering + pagination.
+    queryset = Relationship.objects.filter(organization=request.organization)
+
+    from_asset = request.GET.get('from_asset')
+    if from_asset:
+        try:
+            uuid.UUID(from_asset)  # Validate UUID format
+        except ValueError:
+            raise ValidationError("from_asset must be a valid UUID.")
+        queryset = queryset.filter(from_asset=from_asset)
+
+    to_asset = request.GET.get('to_asset')
+    if to_asset:
+        try:
+            uuid.UUID(to_asset)  # Validate UUID format
+        except ValueError:
+            raise ValidationError("to_asset must be a valid UUID.")
+        queryset = queryset.filter(to_asset=to_asset)
+
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(queryset, request)
+    serializer = RelationshipSerializer(page, many=True)
+    return paginator.get_paginated_response(serializer.data)
+
+# Retrieve the relationships of a specific asset, including both outgoing and incoming relationships, with details about the related assets.
+# -------------------------------------------------
+@extend_schema(
+    responses={
+        200: OpenApiResponse(description="The asset together with its related assets — both outgoing and "
+                                         "incoming neighbors, each tagged with relationship_type and direction."),
+        404: OpenApiResponse(description="No such asset in your organization."),
+    },
+    description="Retrieve a single asset (owned by the caller's organization) together with its 1-hop "
+                "relationship graph: incoming and outgoing neighbors.",
+)
+@api_view(['GET'])
+@permission_classes([HasOrganization])
+def asset_relationships_detail(request, pk):
+    try:
+        asset = Asset.objects.get(pk=pk, organization=request.organization)
+    except Asset.DoesNotExist:
+        raise NotFound("Asset not found.")
+    
+    outgoing = Relationship.objects.filter(from_asset=asset, organization=request.organization).select_related('to_asset')
+    incoming = Relationship.objects.filter(to_asset=asset, organization=request.organization).select_related('from_asset')
+
+    related_assets = []
+
+    for rel in outgoing:
+        related_assets.append({
+            'asset': AssetSerializer(rel.to_asset).data,
+            'relationship_type': rel.relationship_type,
+            'direction': 'outgoing'
+        })
+
+    for rel in incoming:
+        related_assets.append({
+            'asset': AssetSerializer(rel.from_asset).data,
+            'relationship_type': rel.relationship_type,
+            'direction': 'incoming'
+        })
+    
+    return Response({'asset': AssetSerializer(asset).data, 'related_assets': related_assets}, status=status.HTTP_200_OK)
+
+# Delete an exisiting relationship per org, return 404 if not found.
+# -------------------------------------------------
+@extend_schema(
+      responses={204: OpenApiResponse(description="Deleted."),
+                 404: OpenApiResponse(description="No such relationship in your organization.")},
+      description="Delete a relationship owned by the caller's organization.",
+)
+@api_view(['DELETE'])
+@permission_classes([HasOrganization])
+def delete_relationship(request, pk):
+    try:
+        relationship = Relationship.objects.get(pk=pk, organization=request.organization)
+    except Relationship.DoesNotExist:
+        raise NotFound("Relationship not found.")
+    
+    relationship.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+     
