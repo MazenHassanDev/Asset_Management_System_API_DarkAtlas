@@ -1,6 +1,9 @@
 import uuid
+from datetime import date, timedelta
 
 from django.db import IntegrityError
+from django.db.models import Q
+from django.db.models.fields.json import KeyTextTransform
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
@@ -12,7 +15,7 @@ from core.exceptions import Conflict
 from core.pagination import StandardPagination
 from tenants.permissions import HasOrganization
 from .models import Asset, RejectedRecord, Relationship
-from .serializers import AssetSerializer, RejectedRecordSerializer, RelationshipSerializer
+from .serializers import AssetSerializer, RejectedRecordSerializer, RelationshipSerializer, EXPIRING_SOON_DAYS
 from .services.ingest import ingest
 
 # -------------------------------------------------
@@ -33,6 +36,8 @@ DUPLICATE_MESSAGE = "An asset with this type and value already exists for your o
         OpenApiParameter("ordering", OpenApiTypes.STR, description="Sort field: one of last_seen, -last_seen, first_seen, -first_seen, value, -value (default -last_seen)."),
         OpenApiParameter("page", OpenApiTypes.INT, description="1-based page number."),
         OpenApiParameter("page_size", OpenApiTypes.INT, description="Items per page (default 20, max 100)."),
+        OpenApiParameter("q", OpenApiTypes.STR, description="Search across value (partial) and tags (exact tag match)."),
+        OpenApiParameter("cert_status", OpenApiTypes.STR, description="Filter certificates by expiry: expired, expiring_soon, or valid."),
     ],
     responses={200: AssetSerializer(many=True)},
     description="List the caller's organization assets with filtering, ordering and pagination.",
@@ -62,6 +67,36 @@ def list_assets(request):
     asset_value = request.GET.get('value')
     if asset_value:
         queryset = queryset.filter(value__icontains=asset_value)
+
+    # Combined search: value (partial, case-insensitive) OR exact tag match.
+    q = request.GET.get('q')
+    if q:
+        queryset = queryset.filter(Q(value__icontains=q) | Q(tags__contains=[q]))
+
+    # Certificate expiry filter. Compares the ISO date string in metadata directly
+    # (no cast) — ISO dates sort lexicographically, so this is correct and won't
+    # crash on a malformed date the way a date cast would.
+    cert_status = request.GET.get('cert_status')
+    if cert_status:
+        allowed = {'expired', 'expiring_soon', 'valid'}
+        if cert_status not in allowed:
+            raise ValidationError(f"cert_status must be one of {sorted(allowed)}.")
+        today = date.today().isoformat()
+        threshold = (date.today() + timedelta(days=EXPIRING_SOON_DAYS)).isoformat()
+        # Only certificates carry an expiry, so the filter implicitly narrows to them.
+        # The __regex gate keeps only well-formed ISO dates (YYYY-MM-DD...) so a malformed
+        # expires can't be picked — it's excluded from all three, matching the
+        # serializer's 'unknown'.
+        ISO_DATE_PREFIX = r'^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+        queryset = queryset.filter(type=Asset.AssetType.CERTIFICATE).annotate(
+            expires_str=KeyTextTransform('expires', 'metadata')
+        ).filter(expires_str__regex=ISO_DATE_PREFIX)
+        if cert_status == 'expired':
+            queryset = queryset.filter(expires_str__lt=today)
+        elif cert_status == 'expiring_soon':
+            queryset = queryset.filter(expires_str__gte=today, expires_str__lte=threshold)
+        else:  # valid
+            queryset = queryset.filter(expires_str__gt=threshold)
 
     # Sorting
     ordering = request.GET.get('ordering', '-last_seen')

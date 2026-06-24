@@ -103,7 +103,7 @@ def _upsert(organization, cleaned):
     # Re-appearing: merge, and change a stale/archived asset to active.
     asset.tags = _merge_tags(asset.tags, cleaned["tags"])
     asset.metadata = {**asset.metadata, **cleaned["metadata"]}
-    if asset.status != Asset.Status.ACTIVE:
+    if asset.status == Asset.Status.STALE:
         asset.status = Asset.Status.ACTIVE
     asset.save()  # auto_now updates last_seen
     return asset, False
