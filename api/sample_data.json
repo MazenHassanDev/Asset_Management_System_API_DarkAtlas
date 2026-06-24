@@ -106,6 +106,26 @@
     "metadata": { "issuer": "DigiCert", "expires": "2027-01-01" },
     "covers": "does-not-exist"
   },
+  {
+    "id": "a12",
+    "type": "certificate",
+    "value": "CN=legacy.example.com",
+    "status": "active",
+    "source": "scan",
+    "tags": [],
+    "metadata": { "issuer": "GlobalSign", "expires": "not-a-real-date" },
+    "covers": "a2"
+  },
+  {
+    "id": "a13",
+    "type": "certificate",
+    "value": "CN=internal.example.com",
+    "status": "active",
+    "source": "scan",
+    "tags": [],
+    "metadata": { "issuer": "Internal CA" },
+    "covers": "a3"
+  },
 
   "this is not an object",
   { "value": "no-type.example.com", "source": "scan" },
