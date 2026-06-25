@@ -63,6 +63,8 @@ class Relationship(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        # Deterministic default order so paginated list results are stable across pages.
+        ordering = ['-created_at']
         constraints = [
             models.UniqueConstraint(fields=['from_asset', 'to_asset', 'relationship_type'], name='unique_relationship')
         ]
