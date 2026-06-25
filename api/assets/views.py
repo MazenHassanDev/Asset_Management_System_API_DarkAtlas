@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, timedelta
 
+from django.conf import settings
 from django.db import IntegrityError
 from django.db.models import Q
 from django.db.models.fields.json import KeyTextTransform
@@ -128,7 +129,17 @@ def import_assets(request):
     records = request.data
     if not isinstance(records, list):
         raise ValidationError("Request body must be a JSON array of asset records.")
-    
+
+    # Cap the batch size to prevent an unbounded array from exhausting memory/DB
+    # on a single request (abuse vector for a security product). We reuse Django's
+    # own request-item limit (DATA_UPLOAD_MAX_NUMBER_FIELDS, default 1000).
+    max_records = settings.DATA_UPLOAD_MAX_NUMBER_FIELDS
+    if max_records is not None and len(records) > max_records:
+        raise ValidationError(
+            f"Import batch too large: {len(records)} records (max {max_records}). "
+            "Split the import into smaller batches."
+        )
+
     summary = ingest(request.organization, records)
     return Response(summary, status=status.HTTP_200_OK)
 
