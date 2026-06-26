@@ -10,7 +10,6 @@ import uuid
 
 import pytest
 from django.urls import reverse
-from rest_framework.test import APIClient
 
 from tenants.models import ApiKey
 from factories import AssetFactory, OrganizationFactory

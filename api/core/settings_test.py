@@ -13,3 +13,14 @@ CACHES = {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
+
+# Disable read caching for the suite so factory-created rows are never served
+# from a stale cache. The dedicated cache tests turn it back on per-test.
+ASSET_CACHE_TTL = 0
+
+# Disable throttling for the suite: setting the rates to None makes DRF skip
+# throttling entirely, so the tests can't trip the per-org limit and get 429s.
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,  # noqa: F405
+    "DEFAULT_THROTTLE_RATES": {"organization": None, "imports": None},
+}

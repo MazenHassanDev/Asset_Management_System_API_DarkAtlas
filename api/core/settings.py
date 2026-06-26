@@ -9,6 +9,7 @@ https://docs.djangoproject.com/en/6.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
+from datetime import timedelta
 from decouple import config
 from pathlib import Path
 
@@ -100,6 +101,9 @@ CACHES = {
     }
 }
 
+# Seconds to cache asset list/detail reads. 0 disables caching.
+ASSET_CACHE_TTL = config('ASSET_CACHE_TTL', default=300, cast=int)
+
 # DRF Settings
 
 REST_FRAMEWORK = {
@@ -113,14 +117,21 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'core.pagination.StandardPagination',
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'EXCEPTION_HANDLER': 'core.exceptions.custom_exception_handler',
+    'DEFAULT_THROTTLE_CLASSES': (
+        'core.throttling.OrganizationRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        # Per-organization budget for ordinary traffic, and a tighter bucket
+        # for the heavy bulk-import endpoint. Tune via env without a redeploy.
+        'organization': config('THROTTLE_ORG_RATE', default='1000/hour'),
+        'imports': config('THROTTLE_IMPORT_RATE', default='60/hour'),
+    },
 }
 
 SPECTACULAR_SETTINGS = {"TITLE": "DarkAtlas Asset Management API", 
   "VERSION": "0.1.0"}
 
 # JWT Token Settings
-
-from datetime import timedelta
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
