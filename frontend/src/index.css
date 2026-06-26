@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-ink text-text font-sans;
+    margin: 0;
+  }
+}
+
+@layer utilities {
+  /* dark scrollbars */
+  .scroll-dark::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .scroll-dark::-webkit-scrollbar-thumb {
+    background: #283348;
+    border-radius: 5px;
+  }
+  .scroll-dark::-webkit-scrollbar-thumb:hover {
+    background: #34425c;
+  }
+  .scroll-dark::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* form controls inherit the dark theme */
+input,
+select,
+textarea,
+button {
+  font-family: inherit;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: #57c7e8;
+}
