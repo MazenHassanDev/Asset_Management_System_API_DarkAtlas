@@ -3,17 +3,19 @@ from datetime import date, timedelta
 
 from django.conf import settings
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models import Q, Count, Max, Min
 from django.db.models.fields.json import KeyTextTransform
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
+from core import cache as asset_cache
 from core.exceptions import Conflict
 from core.pagination import StandardPagination
+from core.throttling import ImportRateThrottle
 from tenants.permissions import HasOrganization
 from .models import Asset, RejectedRecord, Relationship
 from .serializers import AssetSerializer, RejectedRecordSerializer, RelationshipSerializer, EXPIRING_SOON_DAYS
@@ -46,6 +48,13 @@ DUPLICATE_MESSAGE = "An asset with this type and value already exists for your o
 @api_view(['GET'])
 @permission_classes([HasOrganization])
 def list_assets(request):
+    # Serve from cache when warm (keyed on org + full querystring, so each
+    # distinct filter/page combination is cached independently).
+    cache_key = asset_cache.list_key(request.organization.id, request.GET.urlencode())
+    cached = asset_cache.get_cached(cache_key)
+    if cached is not None:
+        return Response(cached)
+
     # Tenant scope (get this org's assets only)
     queryset = Asset.objects.filter(organization=request.organization)
 
@@ -111,7 +120,9 @@ def list_assets(request):
     paginator = StandardPagination()
     asset_page = paginator.paginate_queryset(queryset, request)
     serializer = AssetSerializer(asset_page, many=True)
-    return paginator.get_paginated_response(serializer.data)
+    response = paginator.get_paginated_response(serializer.data)
+    asset_cache.set_cached(cache_key, response.data)
+    return response
 
 
 # Import a batch of asset records. Each record is validated and either created or merged with an existing asset.
@@ -125,6 +136,7 @@ def list_assets(request):
 )
 @api_view(['POST'])
 @permission_classes([HasOrganization])
+@throttle_classes([ImportRateThrottle])
 def import_assets(request):
     records = request.data
     if not isinstance(records, list):
@@ -141,6 +153,7 @@ def import_assets(request):
         )
 
     summary = ingest(request.organization, records)
+    asset_cache.bump_version(request.organization.id)  # imports change asset rows
     return Response(summary, status=status.HTTP_200_OK)
 
 
@@ -165,6 +178,7 @@ def create_asset(request):
         serializer.save(organization=request.organization)
     except IntegrityError:
         raise Conflict(DUPLICATE_MESSAGE)
+    asset_cache.bump_version(request.organization.id)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 # Retrieve, replace (PUT), partially update (PATCH) or delete a single asset owned by the caller's organization.
@@ -190,8 +204,13 @@ def asset_detail(request, pk):
         raise NotFound("Asset not found.")
 
     if request.method == 'GET':
-        serializer = AssetSerializer(asset)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        cache_key = asset_cache.detail_key(request.organization.id, asset.pk)
+        cached = asset_cache.get_cached(cache_key)
+        if cached is not None:
+            return Response(cached)
+        data = AssetSerializer(asset).data
+        asset_cache.set_cached(cache_key, data)
+        return Response(data, status=status.HTTP_200_OK)
 
     if request.method in ['PUT', 'PATCH']:
         partial = request.method == 'PATCH'
@@ -201,11 +220,55 @@ def asset_detail(request, pk):
             serializer.save()
         except IntegrityError:
             raise Conflict(DUPLICATE_MESSAGE)
+        asset_cache.bump_version(request.organization.id)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     if request.method == 'DELETE':
         asset.delete()
+        asset_cache.bump_version(request.organization.id)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# List recent import batches that produced quarantined rows, scoped to the caller's organization.
+# -------------------------------------------------
+@extend_schema(
+    parameters=[
+        OpenApiParameter("page", OpenApiTypes.INT, description="1-based page number."),
+        OpenApiParameter("page_size", OpenApiTypes.INT, description="Items per page (default 20, max 100)."),
+    ],
+    responses={
+        200: OpenApiResponse(description="Recent quarantine batches: batch_id, rejected-row count, "
+                                         "and first/last seen timestamps, newest first."),
+    },
+    description="List the caller's organization import batches that have quarantined (rejected) rows, "
+                "aggregated by batch and ordered newest first.",
+)
+@api_view(['GET'])
+@permission_classes([HasOrganization])
+def list_batches(request):
+    # Aggregate the RejectedRecord table by batch so the UI can show a history of
+    # imports that produced quarantine, without a separate batch table.
+    # Annotations can't shadow the model's own `created_at` field, so aggregate
+    # under distinct names and project to the API shape afterwards.
+    queryset = (
+        RejectedRecord.objects
+        .filter(organization=request.organization)
+        .values('batch_id')
+        .annotate(count=Count('id'), last_at=Max('created_at'), first_at=Min('created_at'))
+        .order_by('-last_at')
+    )
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(queryset, request)
+    results = [
+        {
+            'batch_id': str(b['batch_id']),
+            'count': b['count'],
+            'created_at': b['last_at'],
+            'first_at': b['first_at'],
+        }
+        for b in page
+    ]
+    return paginator.get_paginated_response(results)
 
 
 # List the rejected (quarantined) rows from a single import batch, scoped to the caller's organization.
