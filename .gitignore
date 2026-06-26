@@ -218,3 +218,10 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
+
+# Node / frontend (Vite)
+node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
