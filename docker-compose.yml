@@ -63,11 +63,11 @@ services:
       - /app/node_modules
     ports:
       - "5173:5173"
-    env_file:
-      # Optional: holds VITE_API_KEY. App still boots without it (clean clone);
-      # mint a key and add it to frontend/.env to authenticate against the API.
-      - path: ./frontend/.env
-        required: false
+    # NOTE: deliberately NO env_file here. Vite reads VITE_* vars from the mounted
+    # frontend/.env itself, and that file is the single source of truth. Loading it
+    # via env_file would inject the value into the container's process env at
+    # create-time — which `docker compose restart` never refreshes, and which Vite
+    # prioritises over the .env file — so edits to frontend/.env would be ignored.
     environment:
       # Vite's /api proxy must reach the API by its compose service name, not localhost.
       VITE_PROXY_TARGET: http://app:8000
