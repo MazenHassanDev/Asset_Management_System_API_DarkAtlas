@@ -20,11 +20,17 @@ The record's own `id` is not the primary key (we use UUIDs for primary key)
 
 import uuid
 
-from django.db import IntegrityError, transaction
+from django.db import DataError, IntegrityError, transaction
 from assets.models import Asset, Relationship, RejectedRecord
 
 VALID_TYPES = set(Asset.AssetType.values)
 VALID_STATUSES = set(Asset.Status.values)
+
+# Pull the column limits straight from the model so validation can never drift
+# from the schema. Over-length rows are quarantined with a clear reason instead
+# of raising a DataError that would otherwise abort the whole batch.
+VALUE_MAX_LENGTH = Asset._meta.get_field("value").max_length
+TAG_MAX_LENGTH = Asset._meta.get_field("tags").base_field.max_length
 
 # Relationship hint field on a record -> the Relationship type it creates.
 #   "parent": this asset (e.g. subdomain) belongs_to the referenced asset (domain)
@@ -47,6 +53,9 @@ def _validate(record):
     value = record.get("value")
     if not isinstance(value, str) or not value.strip():
         return None, "missing or empty value"
+    value = value.strip()
+    if len(value) > VALUE_MAX_LENGTH:
+        return None, f"value exceeds {VALUE_MAX_LENGTH} characters"
 
     asset_status = record.get("status", Asset.Status.ACTIVE)
     if asset_status not in VALID_STATUSES:
@@ -55,6 +64,8 @@ def _validate(record):
     tags = record.get("tags", [])
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         return None, "tags must be a list of strings"
+    if any(len(t) > TAG_MAX_LENGTH for t in tags):
+        return None, f"each tag must be at most {TAG_MAX_LENGTH} characters"
 
     metadata = record.get("metadata", {})
     if not isinstance(metadata, dict):
@@ -62,7 +73,7 @@ def _validate(record):
 
     cleaned = {
         "type": asset_type,
-        "value": value.strip(),
+        "value": value,
         "status": asset_status,
         "source": record.get("source", Asset.Source.IMPORT),
         "tags": tags,
@@ -147,6 +158,11 @@ def ingest(organization, records):
                 asset, created = _upsert(organization, cleaned)
         except IntegrityError:
             reject(index, record, "database conflict")
+            continue
+        except DataError:
+            # Defensive net: any row the explicit checks above missed (e.g. an
+            # over-long field) is quarantined rather than aborting the batch.
+            reject(index, record, "database error: malformed field value")
             continue
 
         summary["created" if created else "updated"] += 1

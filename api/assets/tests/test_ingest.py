@@ -117,6 +117,24 @@ def test_malformed_rows_are_skipped_not_fatal(org):
     assert not Asset.objects.filter(organization=org, value="badstatus.com").exists()
 
 
+def test_overlong_value_is_quarantined_not_fatal(org):
+    """A value longer than the column limit must be quarantined, not raise a
+    DataError that aborts the whole batch (§7 graceful-failure requirement)."""
+    records = [
+        {"type": "domain", "value": "good.com"},
+        {"type": "domain", "value": "x" * 600},            # exceeds value max_length (500)
+        {"type": "domain", "value": "y.com", "tags": ["z" * 80]},  # tag exceeds 50
+        {"type": "subdomain", "value": "after.com"},
+    ]
+    summary = ingest(org, records)
+
+    assert summary["created"] == 2
+    assert summary["skipped"] == 2
+    assert Asset.objects.filter(organization=org, value="good.com").exists()
+    assert Asset.objects.filter(organization=org, value="after.com").exists()
+    assert not Asset.objects.filter(organization=org, value="x" * 600).exists()
+
+
 def test_malformed_rows_are_quarantined_under_batch_id(org):
     summary = ingest(org, [{"bad": "row"}, "also bad"])
 
